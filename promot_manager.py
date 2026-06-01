@@ -15,6 +15,7 @@ import re
 import threading
 import uuid
 from typing import Optional
+from tkinter import filedialog
 
 import customtkinter as ctk
 import pyperclip
@@ -197,6 +198,45 @@ class DataManager:
             p for p in self.all_prompts()
             if q in p.get("title", "").lower() or q in p.get("tags", "").lower()
         ]
+
+    def export_to_file(self, filepath: str) -> bool:
+        """Export all prompts to a JSON file. Returns True if successful."""
+        try:
+            with open(filepath, "w", encoding="utf-8") as fh:
+                json.dump(self._data, fh, indent=2, ensure_ascii=False)
+            return True
+        except OSError as e:
+            print(f"Export failed: {e}")
+            return False
+
+    def import_from_file(self, filepath: str) -> tuple[bool, str]:
+        """Import prompts from a JSON file. Returns (success, message)."""
+        try:
+            with open(filepath, "r", encoding="utf-8") as fh:
+                imported_data = json.load(fh)
+            
+            # Handle both dict-of-dicts and list-of-dicts formats
+            if isinstance(imported_data, list):
+                imported_dict = {item.get("id", str(uuid.uuid4())): item for item in imported_data}
+            elif isinstance(imported_data, dict):
+                imported_dict = imported_data
+            else:
+                return False, "Invalid JSON format. Expected object or array of prompts."
+            
+            # Merge imported prompts with existing ones
+            count = 0
+            for prompt_id, prompt in imported_dict.items():
+                if "id" not in prompt:
+                    prompt["id"] = prompt_id
+                self._data[prompt_id] = prompt
+                count += 1
+            
+            self._persist()
+            return True, f"Successfully imported {count} prompt(s)."
+        except json.JSONDecodeError:
+            return False, "Invalid JSON file. Please check the file format."
+        except OSError as e:
+            return False, f"Failed to read file: {e}"
 
 
 # ─────────────────────────────────────────────
@@ -578,7 +618,23 @@ class PromptManagerApp(ctk.CTk):
             sidebar, "＋  New Prompt", self._open_new_dialog,
             width=SIDEBAR_W - 24, height=40,
         )
-        new_btn.grid(row=3, column=0, padx=12, pady=(4, 14))
+        new_btn.grid(row=3, column=0, padx=12, pady=(4, 8))
+
+        # ── Import/Download buttons ──
+        btn_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        btn_frame.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 14))
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+
+        _ghost_button(
+            btn_frame, "⬇️  Import", self._import_prompts,
+            width=(SIDEBAR_W - 36) // 2,
+        ).grid(row=0, column=0, padx=(0, 4))
+
+        _ghost_button(
+            btn_frame, "⬆️  Download", self._download_prompts,
+            width=(SIDEBAR_W - 36) // 2,
+        ).grid(row=0, column=1, padx=(4, 0))
 
     def _build_main_panel(self) -> None:
         main = ctk.CTkFrame(self, fg_color=BG_PANEL, corner_radius=0)
@@ -850,6 +906,60 @@ class PromptManagerApp(ctk.CTk):
             text="📋  Copy", fg_color=ACCENT, hover_color=ACCENT_HOVER,
         )
         self._copy_timer = None
+
+    # ── IMPORT / EXPORT ───────────────────────
+
+    def _download_prompts(self) -> None:
+        """Export all prompts to a JSON file."""
+        if not self._dm.all_prompts():
+            self._show_notification("No prompts to download", BG_ENTRY)
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Download Prompts",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            initialfile="prompts_backup.json",
+        )
+        
+        if not filepath:
+            return
+        
+        if self._dm.export_to_file(filepath):
+            self._show_notification(f"✓ Prompts downloaded to {os.path.basename(filepath)}", SUCCESS)
+        else:
+            self._show_notification("Failed to download prompts", DANGER)
+
+    def _import_prompts(self) -> None:
+        """Import prompts from a JSON file."""
+        filepath = filedialog.askopenfilename(
+            title="Import Prompts",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+        )
+        
+        if not filepath:
+            return
+        
+        success, message = self._dm.import_from_file(filepath)
+        if success:
+            self._refresh_sidebar(self._search_var.get())
+            self._show_notification(message, SUCCESS)
+        else:
+            self._show_notification(message, DANGER)
+
+    def _show_notification(self, message: str, color: str) -> None:
+        """Show a temporary notification message."""
+        # Create a temporary notification window
+        notif = ctk.CTkFrame(self._action_bar, fg_color=color, corner_radius=6)
+        notif.grid(row=1, column=0, columnspan=2, sticky="ew", padx=0, pady=(8, 0))
+        
+        ctk.CTkLabel(
+            notif, text=message, font=_make_font(11),
+            text_color="white" if color == DANGER else TEXT_PRIMARY,
+        ).pack(padx=12, pady=8)
+        
+        # Auto-dismiss after 3 seconds
+        self.after(3000, notif.destroy)
 
 
 # ─────────────────────────────────────────────
