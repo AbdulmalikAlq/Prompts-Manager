@@ -18,6 +18,7 @@ from typing import Optional
 
 import customtkinter as ctk
 import pyperclip
+import google.generativeai as genai
 
 # ─────────────────────────────────────────────
 #  CONSTANTS
@@ -40,6 +41,58 @@ BG_ENTRY        = "#1E1E2A"
 TEXT_PRIMARY    = "#E8E8F0"
 TEXT_SECONDARY  = "#7A7A9A"
 PLACEHOLDER_RE  = re.compile(r'\[([^\]]+)\]')   # matches [Variable Name]
+
+# ─────────────────────────────────────────────
+#  GEMINI AI CONFIGURATION
+# ─────────────────────────────────────────────
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+print(f"[DEBUG] API Key found: {bool(GEMINI_API_KEY)}")
+if GEMINI_API_KEY:
+    print(f"[DEBUG] API Key preview: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-10:]}")
+    genai.configure(api_key=GEMINI_API_KEY)
+
+
+# ─────────────────────────────────────────────
+#  AI HELPER FUNCTIONS
+# ─────────────────────────────────────────────
+
+def generate_title_and_tags(body: str) -> tuple[str, str]:
+    """Use Gemini AI to generate a title and tags from the prompt body."""
+    if not GEMINI_API_KEY or not body.strip():
+        return "", ""
+    
+    try:
+        model = genai.GenerativeModel("gemini-pro")
+        prompt = f"""Based on the following prompt/instruction, generate:
+1. A concise title (max 50 characters)
+2. Comma-separated tags (3-5 relevant tags)
+
+Prompt:
+{body}
+
+Respond in this exact format:
+Title: [your title here]
+Tags: [tag1, tag2, tag3]"""
+        
+        response = model.generate_content(prompt, stream=False)
+        text = response.text.strip()
+        
+        # Parse response
+        lines = text.split("\n")
+        title = ""
+        tags = ""
+        
+        for line in lines:
+            if line.startswith("Title:"):
+                title = line.replace("Title:", "").strip()
+            elif line.startswith("Tags:"):
+                tags = line.replace("Tags:", "").strip()
+        
+        return title, tags
+    except Exception as e:
+        print(f"Gemini API error: {e}")
+        return "", ""
 
 
 # ─────────────────────────────────────────────
@@ -250,13 +303,31 @@ class PromptDialog(ctk.CTkToplevel):
             self, text="Prompt Body", font=_make_font(12, "bold"),
             text_color=TEXT_SECONDARY,
         ).pack(anchor="w", **pad)
+        
+        # Body text with AI generation button
+        body_frame = ctk.CTkFrame(self, fg_color="transparent")
+        body_frame.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+        body_frame.grid_columnconfigure(0, weight=1)
+        
         self.body_text = ctk.CTkTextbox(
-            self, fg_color=BG_ENTRY, border_color=BG_ENTRY,
+            body_frame, fg_color=BG_ENTRY, border_color=BG_ENTRY,
             text_color=TEXT_PRIMARY, font=_make_font(13),
             corner_radius=8, wrap="word",
         )
-        self.body_text.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+        self.body_text.grid(row=0, column=0, sticky="nsew")
+        body_frame.grid_rowconfigure(0, weight=1)
         self.body_text.insert("1.0", body)
+        
+        # AI Generation button
+        if GEMINI_API_KEY:
+            ai_btn = ctk.CTkButton(
+                body_frame, text="✨ Generate Title & Tags",
+                command=self._generate_with_ai,
+                fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                text_color=TEXT_PRIMARY, corner_radius=8,
+                font=_make_font(11, "bold"), height=32,
+            )
+            ai_btn.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
         # Buttons
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -273,6 +344,39 @@ class PromptDialog(ctk.CTkToplevel):
             return
         self.on_save(title=title, body=body, tags=tags, prompt_id=self.prompt_id)
         self.destroy()
+
+    def _generate_with_ai(self) -> None:
+        """Generate title and tags using Gemini AI in a background thread."""
+        body = self.body_text.get("1.0", "end-1c").strip()
+        if not body:
+            return
+        
+        # Show loading state
+        self.title_entry.configure(state="disabled")
+        self.tags_entry.configure(state="disabled")
+        
+        def _run_ai():
+            title, tags = generate_title_and_tags(body)
+            # Update UI in main thread
+            self.after(0, lambda: self._update_with_ai_result(title, tags))
+        
+        thread = threading.Thread(target=_run_ai, daemon=True)
+        thread.start()
+
+    def _update_with_ai_result(self, title: str, tags: str) -> None:
+        """Update title and tags fields with AI-generated content."""
+        # Re-enable fields
+        self.title_entry.configure(state="normal")
+        self.tags_entry.configure(state="normal")
+        
+        # Clear and populate fields
+        self.title_entry.delete(0, "end")
+        if title:
+            self.title_entry.insert(0, title)
+        
+        self.tags_entry.delete(0, "end")
+        if tags:
+            self.tags_entry.insert(0, tags)
 
 
 # ─────────────────────────────────────────────
